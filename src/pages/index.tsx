@@ -1,151 +1,229 @@
-import { FC } from 'react'
-import { APP_NAME } from '@/lib/consts'
-import { BookOpenIcon, CodeIcon, ShareIcon } from '@heroicons/react/outline'
+import Head from 'next/head'
+import { providers, Contract } from 'ethers'
+import { useEffect, useRef, useState } from 'react'
+import Web3Modal from 'web3modal'
+import { ethers } from 'ethers'
 
-const Home: FC = () => {
+export const abi = [
+	{
+		inputs: [{ internalType: 'uint8', name: '_maxWhitelistedAddresses', type: 'uint8' }],
+		stateMutability: 'nonpayable',
+		type: 'constructor',
+	},
+	{ inputs: [], name: 'addAddressToWhitelist', outputs: [], stateMutability: 'nonpayable', type: 'function' },
+	{
+		inputs: [],
+		name: 'maxWhitelistedAddresses',
+		outputs: [{ internalType: 'uint8', name: '', type: 'uint8' }],
+		stateMutability: 'view',
+		type: 'function',
+	},
+	{
+		inputs: [],
+		name: 'numAddressesWhitelisted',
+		outputs: [{ internalType: 'uint8', name: '', type: 'uint8' }],
+		stateMutability: 'view',
+		type: 'function',
+	},
+	{
+		inputs: [{ internalType: 'address', name: '', type: 'address' }],
+		name: 'whitelistedAddresses',
+		outputs: [{ internalType: 'bool', name: '', type: 'bool' }],
+		stateMutability: 'view',
+		type: 'function',
+	},
+]
+export const WHITELIST_CONTRACT_ADDRESS = 0x1244cc45b370ea3f6b7c28fb3b7485ddf1eea242
+
+export default function Home() {
+	// walletConnected keep track of whether the user's wallet is connected or not
+	const [walletConnected, setWalletConnected] = useState(false)
+	// joinedWhitelist keeps track of whether the current metamask address has joined the Whitelist or not
+	const [joinedWhitelist, setJoinedWhitelist] = useState(false)
+	// loading is set to true when we are waiting for a transaction to get mined
+	const [loading, setLoading] = useState(false)
+	// numberOfWhitelisted tracks the number of addresses's whitelisted
+	const [numberOfWhitelisted, setNumberOfWhitelisted] = useState(0)
+	// Create a reference to the Web3 Modal (used for connecting to Metamask) which persists as long as the page is open
+	const web3ModalRef = useRef()
+
+	/**
+	 * Returns a Provider or Signer object representing the Ethereum RPC with or without the
+	 * signing capabilities of metamask attached
+	 *
+	 * A `Provider` is needed to interact with the blockchain - reading transactions, reading balances, reading state, etc.
+	 *
+	 * A `Signer` is a special type of Provider used in case a `write` transaction needs to be made to the blockchain, which involves the connected account
+	 * needing to make a digital signature to authorize the transaction being sent. Metamask exposes a Signer API to allow your website to
+	 * request signatures from the user using Signer functions.
+	 *
+	 * @param {*} needSigner - True if you need the signer, default false otherwise
+	 */
+	const getProviderOrSigner = async (needSigner = false) => {
+		// Connect to Metamask
+		// Since we store `web3Modal` as a reference, we need to access the `current` value to get access to the underlying object
+		const provider = await web3ModalRef.current.connect()
+		const web3Provider = new providers.Web3Provider(provider)
+
+		// If user is not connected to the Rinkeby network, let them know and throw an error
+		const { chainId } = await web3Provider.getNetwork()
+		if (chainId !== 4) {
+			window.alert('Change the network to Rinkeby')
+			throw new Error('Change network to Rinkeby')
+		}
+
+		if (needSigner) {
+			const signer = web3Provider.getSigner()
+			return signer
+		}
+		return web3Provider
+	}
+
+	/**
+	 * addAddressToWhitelist: Adds the current connected address to the whitelist
+	 */
+	const addAddressToWhitelist = async () => {
+		try {
+			// We need a Signer here since this is a 'write' transaction.
+			const signer = await getProviderOrSigner(true)
+			// Create a new instance of the Contract with a Signer, which allows
+			// update methods
+			const whitelistContract = new Contract(WHITELIST_CONTRACT_ADDRESS.toString(), abi, signer)
+			// call the addAddressToWhitelist from the contract
+			const tx = await whitelistContract.addAddressToWhitelist()
+			setLoading(true)
+			// wait for the transaction to get mined
+			await tx.wait()
+			setLoading(false)
+			// get the updated number of addresses in the whitelist
+			await getNumberOfWhitelisted()
+			setJoinedWhitelist(true)
+		} catch (err) {
+			console.error(err)
+		}
+	}
+
+	/**
+	 * getNumberOfWhitelisted:  gets the number of whitelisted addresses
+	 */
+	const getNumberOfWhitelisted = async () => {
+		try {
+			// Get the provider from web3Modal, which in our case is MetaMask
+			// No need for the Signer here, as we are only reading state from the blockchain
+			const provider = await getProviderOrSigner()
+			// We connect to the Contract using a Provider, so we will only
+			// have read-only access to the Contract
+			const whitelistContract = new Contract(WHITELIST_CONTRACT_ADDRESS.toString(), abi, provider)
+			// call the numAddressesWhitelisted from the contract
+			const _numberOfWhitelisted = await whitelistContract.numAddressesWhitelisted()
+			setNumberOfWhitelisted(_numberOfWhitelisted)
+		} catch (err) {
+			console.error(err)
+		}
+	}
+
+	/**
+	 * checkIfAddressInWhitelist: Checks if the address is in whitelist
+	 */
+	const checkIfAddressInWhitelist = async () => {
+		try {
+			// We will need the signer later to get the user's address
+			// Even though it is a read transaction, since Signers are just special kinds of Providers,
+			// We can use it in it's place
+			const signer = await getProviderOrSigner(true)
+			const whitelistContract = new Contract(WHITELIST_CONTRACT_ADDRESS.toString(), abi, signer)
+			// Get the address associated to the signer which is connected to  MetaMask
+			const address = await signer.getAddress()
+			// call the whitelistedAddresses from the contract
+			const _joinedWhitelist = await whitelistContract.whitelistedAddresses(address)
+			setJoinedWhitelist(_joinedWhitelist)
+		} catch (err) {
+			console.error(err)
+		}
+	}
+
+	/*
+		connectWallet: Connects the MetaMask wallet
+	  */
+	const connectWallet = async () => {
+		try {
+			// Get the provider from web3Modal, which in our case is MetaMask
+			// When used for the first time, it prompts the user to connect their wallet
+			await getProviderOrSigner()
+			setWalletConnected(true)
+
+			checkIfAddressInWhitelist()
+			getNumberOfWhitelisted()
+		} catch (err) {
+			console.error(err)
+		}
+	}
+
+	/*
+		renderButton: Returns a button based on the state of the dapp
+	  */
+	const renderButton = () => {
+		if (walletConnected) {
+			if (joinedWhitelist) {
+				return <div className="description">Thanks for joining the Whitelist!</div>
+			} else if (loading) {
+				return <button className="button">Loading...</button>
+			} else {
+				return (
+					<button onClick={addAddressToWhitelist} className="mt-5 button rounded-full font-bold text-lg">
+						Join the Whitelist
+					</button>
+				)
+			}
+		} else {
+			return (
+				<button onClick={connectWallet} className="button">
+					Connect your wallet
+				</button>
+			)
+		}
+	}
+
+	// useEffects are used to react to changes in state of the website
+	// The array at the end of function call represents what state changes will trigger this effect
+	// In this case, whenever the value of `walletConnected` changes - this effect will be called
+	useEffect(() => {
+		// if wallet is not connected, create a new instance of Web3Modal and connect the MetaMask wallet
+		if (!walletConnected) {
+			// Assign the Web3Modal class to the reference object by setting it's `current` value
+			// The `current` value is persisted throughout as long as this page is open
+			web3ModalRef.current = new Web3Modal({
+				network: 'rinkeby',
+				providerOptions: {},
+				disableInjectedProvider: false,
+			})
+			connectWallet()
+		}
+	}, [walletConnected])
+
 	return (
-		<div className="relative flex items-top justify-center min-h-screen bg-gray-100 dark:bg-gray-900 sm:items-center py-4 sm:pt-0">
-			<div className="max-w-6xl mx-auto sm:px-6 lg:px-8">
-				<div className="flex justify-center pt-8 sm:justify-start sm:pt-0">
-					<h1 className="text-6xl font-bold dark:text-white">{APP_NAME}</h1>
+		<div className="background relative">
+			<div className="absolute right-[180px] top-[300px] text-5xl font-bold leading-normal text-white">
+				Feelin' fruity? <br />
+				<div className="p-0.5 w-28 bg-white mb-10"></div>
+				<div className="description font-normal mt-2 leading-normal">
+					This is just a joke. Do not sign up expecting <br /> anything. If you signed up, you are nasty.{' '}
+					<br />
+					Don't even think about reaching out. <br />I will call the cops.
 				</div>
-
-				<div className="mt-8 bg-white dark:bg-gray-800 overflow-hidden shadow sm:rounded-lg">
-					<div className="grid grid-cols-1 md:grid-cols-2">
-						<div className="p-6">
-							<div className="flex items-center">
-								<BookOpenIcon className="w-8 h-8 text-gray-500" />
-								<div className="ml-4 text-lg leading-7 font-semibold">
-									<a
-										href="https://laravel.com/docs"
-										className="underline text-gray-900 dark:text-white"
-									>
-										Next.js Docs
-									</a>
-								</div>
-							</div>
-
-							<div className="ml-12">
-								<div className="mt-2 text-gray-600 dark:text-gray-400 text-sm">
-									Next.js gives you the best developer experience with all the features you need for
-									production: hybrid static &amp; server rendering, TypeScript support, smart
-									bundling, route pre-fetching, and more. No config needed.
-								</div>
-							</div>
-						</div>
-
-						<div className="p-6 border-t border-gray-200 dark:border-gray-700 md:border-t-0 md:border-l">
-							<div className="flex items-center">
-								<BookOpenIcon className="w-8 h-8 text-gray-500" />
-								<div className="ml-4 text-lg leading-7 font-semibold">
-									<a href="https://laracasts.com" className="underline text-gray-900 dark:text-white">
-										wagmi Docs
-									</a>
-								</div>
-							</div>
-
-							<div className="ml-12">
-								<div className="mt-2 text-gray-600 dark:text-gray-400 text-sm">
-									wagmi is a collection of React Hooks containing everything you need to start working
-									with Ethereum. wagmi makes it easy to display ENS and balance information, sign
-									messages, interact with contracts, and much more — all with caching, request
-									deduplication, and persistence.
-								</div>
-							</div>
-						</div>
-
-						<div className="p-6 border-t border-gray-200 dark:border-gray-700">
-							<div className="flex items-center">
-								<BookOpenIcon className="w-8 h-8 text-gray-500" />
-								<div className="ml-4 text-lg leading-7 font-semibold">
-									<a
-										href="https://laravel-news.com/"
-										className="underline text-gray-900 dark:text-white"
-									>
-										Tailwind Docs
-									</a>
-								</div>
-							</div>
-
-							<div className="ml-12">
-								<div className="mt-2 text-gray-600 dark:text-gray-400 text-sm">
-									Tailwind CSS is a highly customizable, low-level CSS framework that gives you all of
-									the building blocks you need to build bespoke designs without any annoying
-									opinionated styles you have to fight to override.
-								</div>
-							</div>
-						</div>
-
-						<div className="p-6 border-t border-gray-200 dark:border-gray-700 md:border-l">
-							<div className="flex items-center">
-								<CodeIcon className="w-8 h-8 text-gray-500" />
-								<div className="ml-4 text-lg leading-7 font-semibold text-gray-900 dark:text-white">
-									About this Template
-								</div>
-							</div>
-
-							<div className="ml-12">
-								<div className="mt-2 text-gray-600 dark:text-gray-400 text-sm">
-									This starter kit is composed of{' '}
-									<a href="https://nextjs.org" className="underline" target="_blank" rel="noreferrer">
-										Next.js
-									</a>{' '}
-									and{' '}
-									<a
-										href="https://tailwindcss.com"
-										className="underline"
-										target="_blank"
-										rel="noreferrer"
-									>
-										Tailwind CSS
-									</a>
-									, with{' '}
-									<a
-										href="https://rainbowkit.com"
-										className="underline"
-										target="_blank"
-										rel="noreferrer"
-									>
-										RainbowKit
-									</a>
-									,{' '}
-									<a href="https://ethers.org" className="underline" target="_blank" rel="noreferrer">
-										ethers
-									</a>{' '}
-									&amp;{' '}
-									<a href="https://wagmi.sh" className="underline" target="_blank" rel="noreferrer">
-										wagmi
-									</a>{' '}
-									for all your web3 needs. It uses{' '}
-									<a
-										href="https://www.typescriptlang.org/"
-										className="underline"
-										target="_blank"
-										rel="noreferrer"
-									>
-										Typescript
-									</a>{' '}
-									and an opinionated directory structure for maximum dev confy-ness. Enjoy!
-								</div>
-							</div>
-						</div>
+			</div>
+			<div className="main flex flex-row w-1/2 pl-0">
+				<div className="bg-[#0e0e0f]">
+					<h1 className="title font-bold text-5xl leading-snug mb-0">
+						Early access to <br /> my OnlyFans!
+					</h1>
+					<div className="description font-normal mt-2 leading-normal">
+						Access my exclusive content on the blockchain. <br />
+						{numberOfWhitelisted} have already joined the Whitelist!
 					</div>
-				</div>
-
-				<div className="flex justify-center mt-4 sm:items-center sm:justify-between">
-					<div className="text-center text-sm text-gray-500 sm:text-left">
-						<div className="flex items-center">
-							<ShareIcon className="-mt-px w-5 h-5 text-gray-400" />
-
-							<a href="https://twitter.com/m1guelpf" className="ml-1 underline">
-								Share
-							</a>
-						</div>
-					</div>
+					{renderButton()}
 				</div>
 			</div>
 		</div>
 	)
 }
-
-export default Home
